@@ -1,10 +1,10 @@
 """
 Preprocessing module for network traffic data
 This module contains shared functions for cleaning and preparing data
+Note: Feature encoding is now handled by sklearn pipelines in the model files
 """
 
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 
 
 def load_csv(file_path):
@@ -103,3 +103,4 @@ def convert_labels_to_binary(labels):
     """
     binary_labels = labels.apply(lambda x: 'Harmless' if str(x).strip().lower() == 'normal' else 'Threat')
     return binary_labels
+

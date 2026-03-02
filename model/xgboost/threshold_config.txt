@@ -1,0 +1,4 @@
+Optimal Threshold: 0.75
+Target Recall: 0.9986
+Precision: 0.9996
+F1-Score: 0.9991
