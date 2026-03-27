@@ -15,7 +15,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import accuracy_score, classification_report
-from xgboost import XGBClassifier
+# from xgboost import XGBClassifier
 
 # Add parent directory to path to import preprocess module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
