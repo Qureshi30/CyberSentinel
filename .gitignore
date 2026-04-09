@@ -39,6 +39,8 @@ model/*.pkl
 data/train/*.csv
 data/test/*.csv
 data/test/*_predictions.csv
+data/test/xgboost/*.csv
+model/xgboost/*.pkl
 
 # IDE
 .vscode/
