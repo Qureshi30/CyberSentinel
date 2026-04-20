@@ -86,6 +86,7 @@ def evaluate(y_true, y_pred, split_name: str) -> None:
     print(f"  Recall     : {rec*100:.2f}%")
     print(f"  F1-Score   : {f1:.4f}")
     print(f"  F2-Score   : {f2:.4f}")
+    print(f"  False Pos  : {fp:,}")
     print(f"  False Negs  : {fn:,}")
     print(f"  Confusion Matrix → TN={tn:,}  FP={fp:,}  FN={fn:,}  TP={tp:,}")
     print(classification_report(y_true, y_pred,
@@ -219,16 +220,16 @@ for test_path, label in [(TEST21_PATH, "KDDTest-21"), (TEST_PATH, "KDDTest+")]:
         f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0
         f2 = fbeta_score(y_true, preds, beta=2, zero_division=0)
         rows.append(dict(threshold=t, accuracy=accuracy_score(y_true, preds),
-                         precision=prec, recall=rec, f1=f1, f2=f2, fn=fn))
+                         precision=prec, recall=rec, f1=f1, f2=f2, fp=fp, fn=fn))
         if f2 > best_f2:
             best_f2, best_thresh = f2, t
 
     print(f"\n    Threshold search results:")
-    print(f"    {'Thr':>6} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} {'F2':>8} {'FN':>7}")
+    print(f"    {'Thr':>6} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} {'F2':>8} {'FP':>7} {'FN':>7}")
     for r in rows:
         print(f"    {r['threshold']:>6.2f} {r['accuracy']:>8.4f} "
               f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
-              f"{r['f1']:>8.4f} {r['f2']:>8.4f} {r['fn']:>7,}")
+              f"{r['f1']:>8.4f} {r['f2']:>8.4f} {r['fp']:>7,} {r['fn']:>7,}")
     print(f"\n    ✓ Best threshold: {best_thresh:.2f}  (F2={best_f2:.4f})")
 
     y_pred = (proba[:, 1] >= best_thresh).astype(int)
