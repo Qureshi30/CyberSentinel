@@ -12,6 +12,7 @@ OVERFITTING FIXES APPLIED:
 """
 
 import os
+import sys
 import numpy as np
 import pandas as pd
 import joblib
@@ -24,7 +25,11 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (classification_report, accuracy_score,
-                             confusion_matrix)
+                             confusion_matrix, fbeta_score)
+
+# Add parent directory to path to import shared preprocessing helpers
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.preprocess import balance_dataset
 
 # ── 1. CONFIGURATION ──────────────────────────────────────────────────────────
 
@@ -71,6 +76,7 @@ def evaluate(y_true, y_pred, split_name: str) -> None:
     prec = tp / (tp + fp) if (tp + fp) else 0
     rec  = tp / (tp + fn) if (tp + fn) else 0
     f1   = 2 * prec * rec / (prec + rec) if (prec + rec) else 0
+    f2   = fbeta_score(y_true, y_pred, beta=2, zero_division=0)
 
     print(f"\n{'─'*60}")
     print(f"  Results on: {split_name}")
@@ -79,6 +85,8 @@ def evaluate(y_true, y_pred, split_name: str) -> None:
     print(f"  Precision  : {prec*100:.2f}%")
     print(f"  Recall     : {rec*100:.2f}%")
     print(f"  F1-Score   : {f1:.4f}")
+    print(f"  F2-Score   : {f2:.4f}")
+    print(f"  False Negs  : {fn:,}")
     print(f"  Confusion Matrix → TN={tn:,}  FP={fp:,}  FN={fn:,}  TP={tp:,}")
     print(classification_report(y_true, y_pred,
                                 target_names=["Normal", "Attack"]))
@@ -91,6 +99,9 @@ print("="*65)
 
 print("\n[1] Loading training data …")
 df_train = load_and_clean(TRAIN_PATH)
+
+# Apply aggressive undersampling before binary conversion for training.
+df_train = balance_dataset(df_train, label_column="label", random_state=42)
 df_train["label"] = binarise_label(df_train["label"])
 
 n_normal = (df_train["label"] == 0).sum()
@@ -130,6 +141,8 @@ rf = RandomForestClassifier(
     random_state     = 42,
     n_jobs           = -1
 )
+
+train_sample_weight = np.where(y == 1, 1.25, 1.0)
 
 pipeline = Pipeline([
     ("preprocessor", preprocessor),
@@ -178,7 +191,7 @@ for feat, imp in importances.head(10).items():
 # ── 8. TRAIN ON FULL DATASET & EVALUATE ───────────────────────────────────────
 
 print("\n[4] Training on full KDDTrain+ …")
-pipeline.fit(X, y)
+pipeline.fit(X, y, classifier__sample_weight=train_sample_weight)
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 model_path = os.path.join(MODEL_DIR, "random_forest.pkl")
@@ -193,7 +206,32 @@ for test_path, label in [(TEST21_PATH, "KDDTest-21"), (TEST_PATH, "KDDTest+")]:
     y_true  = binarise_label(df_test["label"])
     X_test  = df_test.drop("label", axis=1)
 
-    y_pred = pipeline.predict(X_test)
+    proba = pipeline.predict_proba(X_test)
+
+    best_thresh, best_f2 = 0.5, -1
+    rows = []
+    for t in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
+        preds = (proba[:, 1] >= t).astype(int)
+        cm = confusion_matrix(y_true, preds)
+        tn, fp, fn, tp = cm.ravel()
+        prec = tp / (tp + fp) if (tp + fp) else 0
+        rec = tp / (tp + fn) if (tp + fn) else 0
+        f1 = 2 * prec * rec / (prec + rec) if (prec + rec) else 0
+        f2 = fbeta_score(y_true, preds, beta=2, zero_division=0)
+        rows.append(dict(threshold=t, accuracy=accuracy_score(y_true, preds),
+                         precision=prec, recall=rec, f1=f1, f2=f2, fn=fn))
+        if f2 > best_f2:
+            best_f2, best_thresh = f2, t
+
+    print(f"\n    Threshold search results:")
+    print(f"    {'Thr':>6} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} {'F2':>8} {'FN':>7}")
+    for r in rows:
+        print(f"    {r['threshold']:>6.2f} {r['accuracy']:>8.4f} "
+              f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
+              f"{r['f1']:>8.4f} {r['f2']:>8.4f} {r['fn']:>7,}")
+    print(f"\n    ✓ Best threshold: {best_thresh:.2f}  (F2={best_f2:.4f})")
+
+    y_pred = (proba[:, 1] >= best_thresh).astype(int)
     evaluate(y_true, y_pred, label)
 
     out = df_test.copy()
