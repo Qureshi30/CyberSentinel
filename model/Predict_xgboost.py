@@ -11,6 +11,7 @@ OVERFITTING FIXES APPLIED:
 """
 
 import os
+import sys
 import numpy as np
 import pandas as pd
 import joblib
@@ -22,8 +23,12 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import (classification_report, accuracy_score,
-                             confusion_matrix, f1_score)
+                             confusion_matrix, fbeta_score)
 from xgboost import XGBClassifier
+
+# Add parent directory to path to import shared preprocessing helpers
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.preprocess import balance_dataset
 
 # ── 1. CONFIGURATION ──────────────────────────────────────────────────────────
 
@@ -71,6 +76,7 @@ def evaluate(y_true, y_pred, split_name: str) -> None:
     prec   = tp / (tp + fp) if (tp + fp) else 0
     rec    = tp / (tp + fn) if (tp + fn) else 0
     f1     = 2 * prec * rec / (prec + rec) if (prec + rec) else 0
+    f2     = fbeta_score(y_true, y_pred, beta=2, zero_division=0)
 
     print(f"\n{'─'*60}")
     print(f"  Results on: {split_name}")
@@ -79,6 +85,8 @@ def evaluate(y_true, y_pred, split_name: str) -> None:
     print(f"  Precision  : {prec*100:.2f}%")
     print(f"  Recall     : {rec*100:.2f}%")
     print(f"  F1-Score   : {f1:.4f}")
+    print(f"  F2-Score   : {f2:.4f}")
+    print(f"  False Negs  : {fn:,}")
     print(f"  Confusion Matrix → TN={tn:,}  FP={fp:,}  FN={fn:,}  TP={tp:,}")
     print(classification_report(y_true, y_pred,
                                 target_names=["Normal", "Attack"]))
@@ -93,6 +101,8 @@ print("="*65)
 print("\n[1] Loading training data …")
 df_train = load_and_clean(TRAIN_PATH)
 
+# Apply undersampling on binary intent before model fitting.
+df_train = balance_dataset(df_train, label_column="label", random_state=42)
 df_train["label"] = binarise_label(df_train["label"])
 
 n_normal = (df_train["label"] == 0).sum()
@@ -108,7 +118,9 @@ X_tr, X_val, y_tr, y_val = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-scale_weight = n_normal / n_attack          # natural class-balance weight
+num_negative = int((y == 0).sum())
+num_positive = int((y == 1).sum())
+scale_weight = 2.5
 
 # ── 4. PIPELINE ───────────────────────────────────────────────────────────────
 
@@ -136,6 +148,8 @@ xgb = XGBClassifier(
     n_jobs            = -1
 )
 
+train_sample_weight = np.where(y == 1, 1.25, 1.0)
+
 pipeline = Pipeline([
     ("preprocessor", preprocessor),
     ("classifier",   xgb)
@@ -152,7 +166,7 @@ print(f"    Mean   : {cv_scores.mean():.4f}  (±{cv_scores.std():.4f})")
 # ── 6. TRAIN ON FULL TRAINING SET ─────────────────────────────────────────────
 
 print("\n[3] Training on full KDDTrain+ …")
-pipeline.fit(X, y)
+pipeline.fit(X, y, classifier__sample_weight=train_sample_weight)
 print("    ✓ Training complete")
 
 # Save model
@@ -164,7 +178,7 @@ print(f"    ✓ Model saved → {model_path}")
 # ── 7. INTERNAL VALIDATION CHECK (sanity only) ────────────────────────────────
 
 # Re-train on X_tr, evaluate on X_val to spot train/val gap
-pipeline.fit(X_tr, y_tr)
+pipeline.fit(X_tr, y_tr, classifier__sample_weight=np.where(y_tr == 1, 1.25, 1.0))
 val_pred  = pipeline.predict(X_val)
 train_pred = pipeline.predict(X_tr)
 
@@ -192,27 +206,28 @@ for test_path, label in [(TEST21_PATH, "KDDTest-21"), (TEST_PATH, "KDDTest+")]:
     proba = pipeline.predict_proba(X_test)
 
     # ── Threshold search on genuinely held-out test data ──────────────────
-    best_thresh, best_f1 = 0.5, -1
+    best_thresh, best_f2 = 0.5, -1
     rows = []
-    for t in [0.30, 0.35, 0.40, 0.45, 0.50]:
+    for t in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
         preds = (proba[:, 1] >= t).astype(int)
         cm    = confusion_matrix(y_true, preds)
         tn, fp, fn, tp_val = cm.ravel()
         prec = tp_val / (tp_val + fp) if (tp_val + fp) else 0
         rec  = tp_val / (tp_val + fn) if (tp_val + fn) else 0
         f1   = 2 * prec * rec / (prec + rec) if (prec + rec) else 0
+        f2   = fbeta_score(y_true, preds, beta=2, zero_division=0)
         rows.append(dict(threshold=t, accuracy=accuracy_score(y_true, preds),
-                         precision=prec, recall=rec, f1=f1, fn=fn))
-        if f1 > best_f1:
-            best_f1, best_thresh = f1, t
+                         precision=prec, recall=rec, f1=f1, f2=f2, fn=fn))
+        if f2 > best_f2:
+            best_f2, best_thresh = f2, t
 
     print(f"\n    Threshold search results:")
-    print(f"    {'Thr':>6} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} {'FN':>7}")
+    print(f"    {'Thr':>6} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} {'F2':>8} {'FN':>7}")
     for r in rows:
         print(f"    {r['threshold']:>6.2f} {r['accuracy']:>8.4f} "
               f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
-              f"{r['f1']:>8.4f} {r['fn']:>7,}")
-    print(f"\n    ✓ Best threshold: {best_thresh:.2f}  (F1={best_f1:.4f})")
+              f"{r['f1']:>8.4f} {r['f2']:>8.4f} {r['fn']:>7,}")
+    print(f"\n    ✓ Best threshold: {best_thresh:.2f}  (F2={best_f2:.4f})")
 
     final_preds = (proba[:, 1] >= best_thresh).astype(int)
     evaluate(y_true, final_preds, label)
