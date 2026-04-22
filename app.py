@@ -9,24 +9,10 @@ import pandas as pd
 import joblib
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, recall_score, f1_score, fbeta_score
-from src.predict import predict_from_csv
+from src.predict import predict_from_csv, list_available_models, list_available_cascade_models
+from src.preprocess import clean_data
 
 app = Flask(__name__)
-
-METRIC_DROP_COLS = [
-    "difficulty",
-    "num_outbound_cmds",
-    "is_host_login",
-    "su_attempted",
-    "urgent",
-    "land",
-    "num_access_files",
-    "num_shells",
-    "root_shell",
-    "num_file_creations",
-    "num_failed_logins",
-    "num_root",
-]
 
 MODEL_DASHBOARD_SOURCES = {
     "xgboost": {
@@ -38,14 +24,19 @@ MODEL_DASHBOARD_SOURCES = {
         ],
         "prediction_paths": {
             "acc_test_plus": [
+                os.path.join("data", "test", "KDDTest+_predictions_xgboost.csv"),
                 os.path.join("data", "test", "xgboost", "KDDTest+_predictions.csv"),
                 os.path.join("data", "test", "xgboost", "KDDTest+_predictions_xgboost.csv"),
             ],
             "acc_test_21": [
+                os.path.join("data", "test", "KDDTest-21_predictions_xgboost.csv"),
+                os.path.join("data", "test", "KDDTest-21_cascade_xgboost.csv"),
                 os.path.join("data", "test", "xgboost", "KDDTest-21_predictions.csv"),
                 os.path.join("data", "test", "xgboost", "KDDTest-21_predictions_xgboost.csv"),
             ],
             "attack_recall_21": [
+                os.path.join("data", "test", "KDDTest-21_predictions_xgboost.csv"),
+                os.path.join("data", "test", "KDDTest-21_cascade_xgboost.csv"),
                 os.path.join("data", "test", "xgboost", "KDDTest-21_predictions.csv"),
                 os.path.join("data", "test", "xgboost", "KDDTest-21_predictions_xgboost.csv"),
             ],
@@ -60,12 +51,15 @@ MODEL_DASHBOARD_SOURCES = {
         ],
         "prediction_paths": {
             "acc_test_plus": [
+                os.path.join("data", "test", "KDDTest+_predictions_randomforest.csv"),
                 os.path.join("data", "test", "random_forest", "KDDTest+_predictions.csv"),
             ],
             "acc_test_21": [
+                os.path.join("data", "test", "KDDTest-21_predictions_randomforest.csv"),
                 os.path.join("data", "test", "random_forest", "KDDTest-21_predictions.csv"),
             ],
             "attack_recall_21": [
+                os.path.join("data", "test", "KDDTest-21_predictions_randomforest.csv"),
                 os.path.join("data", "test", "random_forest", "KDDTest-21_predictions.csv"),
             ],
         },
@@ -78,12 +72,15 @@ MODEL_DASHBOARD_SOURCES = {
         ],
         "prediction_paths": {
             "acc_test_plus": [
+                os.path.join("data", "test", "KDDTest+_predictions_svm.csv"),
                 os.path.join("data", "test", "svm", "KDDTest+_predictions.csv"),
             ],
             "acc_test_21": [
+                os.path.join("data", "test", "KDDTest-21_predictions_svm.csv"),
                 os.path.join("data", "test", "svm", "KDDTest-21_predictions.csv"),
             ],
             "attack_recall_21": [
+                os.path.join("data", "test", "KDDTest-21_predictions_svm.csv"),
                 os.path.join("data", "test", "svm", "KDDTest-21_predictions.csv"),
             ],
         },
@@ -126,7 +123,7 @@ def _compute_prediction_file_metrics(csv_path):
         return {}
 
     label_col = _find_column(df, ["label", "actual_label", "class"])
-    pred_col = _find_column(df, ["prediction", "pred", "predicted_label"])
+    pred_col = _find_column(df, ["final_prediction", "prediction", "pred", "predicted_label"])
 
     if label_col is None or pred_col is None or df.empty:
         return {}
@@ -175,13 +172,16 @@ def _compute_train_val_gap(model_path):
     try:
         model = joblib.load(model_path)
         df = pd.read_csv(train_path)
+        df = clean_data(df)
 
         if "label" not in df.columns:
             return None
 
-        df = df.drop(columns=[col for col in METRIC_DROP_COLS if col in df.columns])
+        if "difficulty" in df.columns:
+            df = df.drop(columns=["difficulty"])
+
         y = df["label"].apply(_to_binary_label)
-        X = df.drop(columns=["label"])
+        X = df.drop(columns=[col for col in ["label", "actual_label", "class"] if col in df.columns])
 
         X_train, X_val, y_train, y_val = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
@@ -197,7 +197,7 @@ def _compute_train_val_gap(model_path):
 
 def _build_dashboard_payload():
     payload = {
-        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "generated_at": pd.Timestamp.now("UTC").isoformat(),
         "models": {},
     }
 
@@ -263,6 +263,72 @@ def _build_dashboard_payload():
     return payload
 
 
+def _pick_prediction_column(df):
+    return _find_column(df, ["final_prediction", "prediction", "Prediction", "predicted_label", "pred"])
+
+
+def _build_prediction_payload(result_df, display_limit=100):
+    if result_df is None or result_df.empty:
+        return {
+            "summary": {"total": 0, "normal": 0, "attack": 0, "showing": 0},
+            "rows": [],
+        }
+
+    pred_col = _pick_prediction_column(result_df)
+    if pred_col is None:
+        raise ValueError("Prediction output does not contain a recognizable prediction column")
+
+    pred_series = result_df[pred_col].astype(str).str.strip().str.lower()
+    is_normal = pred_series == "normal"
+
+    summary = {
+        "total": int(len(result_df)),
+        "normal": int(is_normal.sum()),
+        "attack": int((~is_normal).sum()),
+        "normal_percentage": round(float(is_normal.mean() * 100.0), 2),
+        "attack_percentage": round(float((~is_normal).mean() * 100.0), 2),
+        "showing": int(min(display_limit, len(result_df))),
+    }
+
+    preferred_cols = [
+        pred_col,
+        "stage1_p_attack",
+        "stage2_top1_conf",
+        "stage2_margin",
+        "decision_path",
+        "model_used",
+    ]
+    preview_cols = [c for c in preferred_cols if c in result_df.columns]
+    if len(preview_cols) < 6:
+        fallback = [c for c in result_df.columns if c not in preview_cols]
+        preview_cols.extend(fallback[: 6 - len(preview_cols)])
+
+    rows = []
+    for idx, (_, row) in enumerate(result_df.head(display_limit).iterrows(), start=1):
+        features = {}
+        for col in preview_cols:
+            value = row[col]
+            if isinstance(value, float):
+                features[col] = round(float(value), 6)
+            else:
+                features[col] = value
+
+        rows.append(
+            {
+                "row_number": idx,
+                "prediction": str(row[pred_col]),
+                "fields": features,
+            }
+        )
+
+    return {
+        "prediction_column": pred_col,
+        "preview_columns": preview_cols,
+        "summary": summary,
+        "rows": rows,
+    }
+
+
 @app.route('/')
 def index():
     """
@@ -279,93 +345,79 @@ def dashboard_metrics():
     return jsonify(_build_dashboard_payload())
 
 
+@app.route('/api/predict', methods=['POST'])
+def api_predict():
+    """
+    Handle CSV upload for in-page predictions and return JSON payload.
+    """
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+
+        if not file.filename.lower().endswith('.csv'):
+            return jsonify({"error": "Please upload a CSV file"}), 400
+
+        algorithm = request.form.get('algorithm', 'xgboost').strip().lower()
+        pipeline = request.form.get('pipeline', 'cascade').strip().lower()
+        if algorithm not in ['randomforest', 'svm', 'xgboost']:
+            return jsonify({"error": "Invalid algorithm. Use randomforest, svm, or xgboost."}), 400
+        if pipeline not in ['single', 'cascade']:
+            return jsonify({"error": "Invalid pipeline. Use single or cascade."}), 400
+
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'sample_input.csv')
+        file.save(file_path)
+
+        result_df = predict_from_csv(file_path, algorithm=algorithm, pipeline=pipeline)
+        payload = _build_prediction_payload(result_df)
+        payload['algorithm'] = algorithm
+        payload['pipeline'] = pipeline
+        return jsonify(payload)
+
+    except FileNotFoundError:
+        return jsonify({
+            "error": "Required model artifacts not found. Train the selected model/pipeline first."
+        }), 404
+    except Exception as e:
+        return jsonify({"error": f"Error processing file: {str(e)}"}), 500
+
+
 @app.route('/predict', methods=['POST'])
 def predict():
     """
     Handle CSV upload and make predictions
     """
-    error = None
-    predictions = None
-    
-    try:
-        # Check if file was uploaded
-        if 'file' not in request.files:
-            error = "No file uploaded"
-            return render_template('index.html', predictions=None, error=error)
-        
-        file = request.files['file']
-        
-        # Check if file is selected
-        if file.filename == '':
-            error = "No file selected"
-            return render_template('index.html', predictions=None, error=error)
-        
-        # Check if file is CSV
-        if not file.filename.endswith('.csv'):
-            error = "Please upload a CSV file"
-            return render_template('index.html', predictions=None, error=error)
-        
-        # Save the uploaded file
-        file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'sample_input.csv')
-        file.save(file_path)
-        
-        # Make predictions
-        result_df = predict_from_csv(file_path)
-        
-        # Prepare predictions for display (limit to first 100 rows for display)
-        display_limit = 100
-        predictions = []
-        
-        for idx, row in result_df.head(display_limit).iterrows():
-            pred_result = {
-                'row_number': idx + 1,
-                'prediction': row['Prediction'],
-                'features': {}
-            }
-            
-            # Add first few features for context (exclude the prediction column)
-            feature_count = 0
-            for col in result_df.columns:
-                if col != 'Prediction' and feature_count < 5:
-                    pred_result['features'][col] = row[col]
-                    feature_count += 1
-            
-            predictions.append(pred_result)
-        
-        # Calculate summary statistics
-        total = len(result_df)
-        threat_count = (result_df['Prediction'] == 'Threat').sum()
-        harmless_count = (result_df['Prediction'] == 'Harmless').sum()
-        
-        summary = {
-            'total': total,
-            'threat': threat_count,
-            'harmless': harmless_count,
-            'threat_percentage': f"{(threat_count/total*100):.1f}",
-            'harmless_percentage': f"{(harmless_count/total*100):.1f}",
-            'showing': min(display_limit, total)
-        }
-        
-        return render_template('index.html', predictions=predictions, summary=summary, error=None)
-    
-    except FileNotFoundError as e:
-        error = "Model not found. Please train the model first by running: python src/train_model.py"
-        return render_template('index.html', predictions=None, error=error)
-    
-    except Exception as e:
-        error = f"Error processing file: {str(e)}"
-        return render_template('index.html', predictions=None, error=error)
+    # Kept as backward-compatible alias for form posts.
+    return api_predict()
 
 
 if __name__ == '__main__':
-    # Check if model exists
-    model_path = os.path.join('model', 'intrusion_model.pkl')
-    if not os.path.exists(model_path):
+    # Check whether any single-model or cascade artifacts are available.
+    available_single = list_available_models()
+    available_cascade = list_available_cascade_models()
+
+    if not available_single and not available_cascade:
         print("\n" + "="*60)
-        print("WARNING: Model not found!")
+        print("WARNING: No trained model artifacts found!")
         print("="*60)
-        print("Please train the model first by running:")
-        print("  python src/train_model.py")
+        print("Train at least one pipeline first:")
+        print("  Single model:  python src/train_model.py")
+        print("  Cascade model: python src/train_stage1_binary.py --model xgboost")
+        print("                 python src/train_stage2_category.py --model xgboost")
+        print("                 python src/calibrate_models.py --model xgboost")
+        print("                 python src/threshold_tuning.py --model xgboost")
+        print("="*60 + "\n")
+    else:
+        print("\n" + "="*60)
+        print("Model artifacts detected")
+        print("="*60)
+        if available_single:
+            print(f"Single-model ready: {', '.join(available_single)}")
+        if available_cascade:
+            print(f"Cascade-ready: {', '.join(available_cascade)}")
         print("="*60 + "\n")
     
     # Run the Flask app

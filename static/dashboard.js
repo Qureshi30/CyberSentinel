@@ -242,6 +242,15 @@
         const state = React.useState({ loading: true, error: null, data: null });
         const view = state[0];
         const setView = state[1];
+        const predictState = React.useState({
+            running: false,
+            error: null,
+            payload: null,
+            algorithm: "xgboost",
+            pipeline: "cascade",
+        });
+        const predictView = predictState[0];
+        const setPredictView = predictState[1];
 
         React.useEffect(function () {
             fetch("/api/dashboard-metrics")
@@ -275,6 +284,116 @@
 
         const generatedAt = view.data.generated_at ? new Date(view.data.generated_at).toLocaleString() : "Unknown";
 
+        function onUploadSubmit(ev) {
+            ev.preventDefault();
+            const formEl = ev.currentTarget;
+            const fileInput = formEl.querySelector("input[name='file']");
+            const algorithmSelect = formEl.querySelector("select[name='algorithm']");
+            const pipelineSelect = formEl.querySelector("select[name='pipeline']");
+
+            const file = fileInput && fileInput.files ? fileInput.files[0] : null;
+            const algorithm = algorithmSelect ? algorithmSelect.value : "xgboost";
+            const pipeline = pipelineSelect ? pipelineSelect.value : "cascade";
+
+            if (!file) {
+                setPredictView({
+                    running: false,
+                    error: "Please select a CSV file before running prediction.",
+                    payload: null,
+                    algorithm: algorithm,
+                    pipeline: pipeline,
+                });
+                return;
+            }
+
+            const fd = new FormData();
+            fd.append("file", file);
+            fd.append("algorithm", algorithm);
+            fd.append("pipeline", pipeline);
+
+            setPredictView({
+                running: true,
+                error: null,
+                payload: null,
+                algorithm: algorithm,
+                pipeline: pipeline,
+            });
+
+            fetch("/api/predict", {
+                method: "POST",
+                body: fd,
+            })
+                .then(function (res) {
+                    return res.json().then(function (json) {
+                        if (!res.ok) {
+                            throw new Error(json.error || "Prediction failed");
+                        }
+                        return json;
+                    });
+                })
+                .then(function (json) {
+                    setPredictView({
+                        running: false,
+                        error: null,
+                        payload: json,
+                        algorithm: algorithm,
+                        pipeline: pipeline,
+                    });
+                })
+                .catch(function (err) {
+                    setPredictView({
+                        running: false,
+                        error: err.message,
+                        payload: null,
+                        algorithm: algorithm,
+                        pipeline: pipeline,
+                    });
+                });
+        }
+
+        var predictionPanel = null;
+        if (predictView.payload) {
+            const rows = predictView.payload.rows || [];
+            const summary = predictView.payload.summary || {};
+            predictionPanel = h("section", { className: "section inference-results" }, [
+                h("h2", { className: "section-title", key: "title" }, "Live Prediction Results"),
+                h("p", { className: "subline", key: "meta" },
+                    "Pipeline: " + (predictView.payload.pipeline || predictView.pipeline) +
+                    " | Model: " + (predictView.payload.algorithm || predictView.algorithm)
+                ),
+                h("div", { className: "result-summary", key: "summary" }, [
+                    h("div", { className: "result-pill", key: "t" }, "Total: " + (summary.total || 0)),
+                    h("div", { className: "result-pill", key: "n" }, "Normal: " + (summary.normal || 0)),
+                    h("div", { className: "result-pill", key: "a" }, "Attack: " + (summary.attack || 0)),
+                    h("div", { className: "result-pill", key: "s" }, "Showing: " + (summary.showing || 0)),
+                ]),
+                h("div", { className: "result-table-wrap", key: "table" }, [
+                    h("table", { className: "result-table" }, [
+                        h("thead", { key: "thead" }, [
+                            h("tr", null, [
+                                h("th", { key: "r" }, "#"),
+                                h("th", { key: "p" }, "Prediction"),
+                                h("th", { key: "f" }, "Details"),
+                            ]),
+                        ]),
+                        h("tbody", { key: "tbody" },
+                            rows.map(function (r) {
+                                var details = Object.keys(r.fields || {}).map(function (k) {
+                                    return k + ": " + String(r.fields[k]);
+                                }).join(" | ");
+
+                                return h("tr", { key: "row-" + r.row_number }, [
+                                    h("td", { key: "c1" }, String(r.row_number)),
+                                    h("td", { key: "c2" }, String(r.prediction)),
+                                    h("td", { key: "c3", className: "details-cell" }, details),
+                                ]);
+                            })
+                        ),
+                    ]),
+                ]),
+            ]);
+        }
+
         return h("main", { className: "shell" }, [
             h("h1", { className: "headline", key: "headline" }, "CyberSentinel Model Dashboard"),
             h(
@@ -282,6 +401,34 @@
                 { className: "subline", key: "subline" },
                 "This compares all three models on the key metrics using your latest generated prediction files."
             ),
+            h("section", { className: "section upload-section", key: "upload" }, [
+                h("h2", { className: "section-title", key: "upload-title" }, "Run Live Prediction"),
+                h("form", { className: "upload-form", onSubmit: onUploadSubmit, key: "upload-form" }, [
+                    h("input", {
+                        type: "file",
+                        name: "file",
+                        accept: ".csv",
+                        required: true,
+                        key: "file",
+                    }),
+                    h("select", { name: "pipeline", defaultValue: predictView.pipeline, key: "pipeline" }, [
+                        h("option", { value: "cascade", key: "c" }, "cascade"),
+                        h("option", { value: "single", key: "s" }, "single"),
+                    ]),
+                    h("select", { name: "algorithm", defaultValue: predictView.algorithm, key: "algorithm" }, [
+                        h("option", { value: "xgboost", key: "x" }, "xgboost"),
+                        h("option", { value: "randomforest", key: "r" }, "randomforest"),
+                        h("option", { value: "svm", key: "v" }, "svm"),
+                    ]),
+                    h("button", { type: "submit", disabled: predictView.running, key: "run" },
+                        predictView.running ? "Running..." : "Predict"
+                    ),
+                ]),
+                predictView.error
+                    ? h("div", { className: "error", key: "upload-error" }, predictView.error)
+                    : null,
+            ]),
+            predictionPanel,
             SECTIONS.map(function (section) {
                 return h(Section, {
                     key: section.key,

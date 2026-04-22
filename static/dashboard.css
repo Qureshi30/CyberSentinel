@@ -54,6 +54,96 @@ body {
     font-weight: 700;
 }
 
+.upload-section {
+    border: 1px solid #263041;
+    border-radius: 14px;
+    padding: 16px;
+    background: linear-gradient(180deg, #151b24 0%, #12171f 100%);
+}
+
+.upload-form {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) 140px 140px 120px;
+    gap: 10px;
+    align-items: center;
+}
+
+.upload-form input,
+.upload-form select,
+.upload-form button {
+    height: 38px;
+    border-radius: 10px;
+    border: 1px solid #2e3949;
+    background: #1b212b;
+    color: #e7edf5;
+    padding: 0 10px;
+    font-family: inherit;
+}
+
+.upload-form button {
+    background: #2f80ed;
+    border-color: #2f80ed;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.upload-form button:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.inference-results .subline {
+    margin-bottom: 10px;
+}
+
+.result-summary {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.result-pill {
+    border-radius: 999px;
+    background: #1b212b;
+    border: 1px solid #2b3646;
+    color: #dfe7f2;
+    padding: 6px 10px;
+    font-size: 0.84rem;
+    font-weight: 700;
+}
+
+.result-table-wrap {
+    overflow-x: auto;
+    border-radius: 10px;
+    border: 1px solid #2b3545;
+}
+
+.result-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #131922;
+}
+
+.result-table th,
+.result-table td {
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid #232d3c;
+    padding: 8px 10px;
+    font-size: 0.84rem;
+}
+
+.result-table th {
+    color: #c9d5e4;
+    font-weight: 800;
+    background: #1a2230;
+}
+
+.details-cell {
+    color: #b3c0d1;
+}
+
 .diagnostic-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -249,6 +339,10 @@ body {
     }
 
     .chip-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .upload-form {
         grid-template-columns: 1fr;
     }
 }
