@@ -39,6 +39,11 @@ model/*.pkl
 data/train/*.csv
 data/test/*.csv
 data/test/*_predictions.csv
+data/test/xgboost/*.csv
+data/test/svm/*.csv
+data/test/random_forest/*.csv
+data/test/ensemble/*.csv
+model/xgboost/*.pkl
 
 # IDE
 .vscode/

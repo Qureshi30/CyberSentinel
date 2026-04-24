@@ -12,6 +12,7 @@ import joblib
 # Add parent directory to path to import preprocess module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.preprocess import load_csv, clean_data
+from src.infer_cascade import run_cascade_inference
 
 # Test data file paths
 TEST_DATA_PATHS = {
@@ -61,17 +62,46 @@ def list_available_models():
     return available
 
 
-def predict_from_csv(csv_file_path, algorithm='randomforest'):
+def list_available_cascade_models():
+    """
+    List models that have complete cascade artifacts ready for inference
+
+    Returns:
+        list of available model names
+    """
+    available = []
+    required_files = [
+        "stage1_calibrated.pkl",
+        "stage2_calibrated.pkl",
+        "stage2_label_encoder.pkl",
+        "cascade_config.json",
+    ]
+
+    for algo in ['randomforest', 'svm', 'xgboost']:
+        model_dir = os.path.join('model', 'cascade', algo)
+        if all(os.path.exists(os.path.join(model_dir, fname)) for fname in required_files):
+            available.append(algo)
+
+    return available
+
+
+def predict_from_csv(csv_file_path, algorithm='randomforest', pipeline='single'):
     """
     Make predictions on network traffic data from a CSV file
     
     Args:
         csv_file_path: path to the CSV file containing network traffic data
         algorithm: algorithm to use ('randomforest', 'svm', 'xgboost')
+        pipeline: 'single' (legacy) or 'cascade' (new two-stage flow)
     
     Returns:
         pandas DataFrame with original data and predictions
     """
+    if pipeline == 'cascade':
+        print(f"Loading data from {csv_file_path}...")
+        print(f"Running CASCADE pipeline with {algorithm.upper()}...")
+        return run_cascade_inference(input_csv=csv_file_path, model=algorithm, output_csv=None)
+
     print(f"Loading data from {csv_file_path}...")
     
     # Load the CSV file
@@ -190,6 +220,10 @@ if __name__ == "__main__":
                        choices=['randomforest', 'svm', 'xgboost'], 
                        default='randomforest',
                        help='Algorithm to use for prediction (default: randomforest)')
+    parser.add_argument('--pipeline',
+                       choices=['single', 'cascade'],
+                       default='single',
+                       help='Prediction pipeline: single (legacy) or cascade (two-stage)')
     parser.add_argument('--test', 
                        choices=['test21', 'testplus'], 
                        help='Use predefined test dataset (test21=KDDTest-21.csv, testplus=KDDTest+.csv)')
@@ -200,10 +234,16 @@ if __name__ == "__main__":
     
     if args.list_models:
         available = list_available_models()
+        cascade_available = list_available_cascade_models()
         if available:
             print(f"Available trained models: {', '.join(available)}")
         else:
             print("No trained models found. Please train models first using train_model.py")
+
+        if cascade_available:
+            print(f"Available cascade-ready models: {', '.join(cascade_available)}")
+        else:
+            print("No cascade-ready models found. Run stage1/stage2 training, calibration, and threshold tuning first.")
         sys.exit(0)
     
     # Determine input file
@@ -223,20 +263,28 @@ if __name__ == "__main__":
         print(f"ERROR: File not found: {input_file}")
         sys.exit(1)
     
-    # Check if the selected model is available
-    available_models = list_available_models()
-    if args.algorithm not in available_models:
-        print(f"ERROR: Model '{args.algorithm}' not trained. Available models: {available_models}")
-        print("Train models using: python train_model.py --algorithms randomforest svm xgboost")
-        sys.exit(1)
+    # Check if the selected model is available for selected pipeline
+    if args.pipeline == 'single':
+        available_models = list_available_models()
+        if args.algorithm not in available_models:
+            print(f"ERROR: Model '{args.algorithm}' not trained. Available models: {available_models}")
+            print("Train models using: python train_model.py --algorithms randomforest svm xgboost")
+            sys.exit(1)
+    else:
+        available_models = list_available_cascade_models()
+        if args.algorithm not in available_models:
+            print(f"ERROR: Cascade artifacts for '{args.algorithm}' are missing. Available cascade-ready models: {available_models}")
+            print("Run: train_stage1_binary -> train_stage2_category -> calibrate_models -> threshold_tuning")
+            sys.exit(1)
     
     try:
         # Make predictions
-        result_df = predict_from_csv(input_file, args.algorithm)
+        result_df = predict_from_csv(input_file, args.algorithm, pipeline=args.pipeline)
         
         if result_df is not None:
             # Save results
-            output_path = input_file.replace('.csv', f'_predictions_{args.algorithm}.csv')
+            suffix = f"_predictions_{args.algorithm}" if args.pipeline == 'single' else f"_cascade_{args.algorithm}"
+            output_path = input_file.replace('.csv', f'{suffix}.csv')
             result_df.to_csv(output_path, index=False)
             print(f"\nPredictions saved to: {output_path}")
         else:

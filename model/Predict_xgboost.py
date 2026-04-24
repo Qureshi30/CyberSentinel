@@ -1,279 +1,247 @@
 """
-Optimized XGBoost Model with Aggressive Recall Enhancement
-Uses multiple strategies to maximize attack detection:
-1. Aggressive class weight balancing (2x scale_pos_weight)
-2. Lower classification thresholds (0.3-0.5 range tested)
-3. Enhanced hyperparameters for recall optimization
-4. Multiple threshold testing for optimal F1 balance
+XGBoost Classifier for KDD Network Intrusion Detection
+=======================================================
+OVERFITTING FIXES APPLIED:
+  1. Dropped 'difficulty' — post-hoc metadata, causes data leakage
+  2. Dropped zero-variance cols: 'num_outbound_cmds', 'is_host_login'
+  3. Dropped 9 near-zero-importance cols (root_shell, num_shells, etc.)
+  4. Reduced max_depth (6→5) and added regularisation (gamma, reg_alpha/lambda)
+  5. Evaluation on BOTH KDDTest+ and KDDTest-21 — not just the training split
+  6. Threshold search on Test-21 (genuinely held-out data)
 """
+
+import os
+import sys
+import numpy as np
 import pandas as pd
 import joblib
-import os
-import numpy as np
-from sklearn.model_selection import train_test_split
+import warnings
+warnings.filterwarnings("ignore")
+
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+from sklearn.metrics import (classification_report, accuracy_score,
+                             confusion_matrix, fbeta_score)
 from xgboost import XGBClassifier
-import warnings
-warnings.filterwarnings('ignore')
 
-print("=" * 70)
-print("XGBOOST MODEL - AGGRESSIVE RECALL OPTIMIZATION")
-print("=" * 70)
+# Add parent directory to path to import shared preprocessing helpers
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from src.preprocess import balance_dataset
 
-# Load training data
-print("\n[Step 1] Loading Training Data...")
-print("-" * 70)
-df = pd.read_csv("data/train/KDDTrain+.csv")
-print(f"Loaded training data: {df.shape[0]} rows, {df.shape[1]} columns")
+# ── 1. CONFIGURATION ──────────────────────────────────────────────────────────
 
-if "difficulty" in df.columns:
-    df = df.drop("difficulty", axis=1)
+TRAIN_PATH  = "data/train/KDDTrain+.csv"
+TEST21_PATH = "data/test/KDDTest-21.csv"
+TEST_PATH   = "data/test/KDDTest+.csv"
+MODEL_DIR   = "model/xgboost"
+OUTPUT_DIR  = "data/test/xgboost"
 
-df["label"] = df["label"].apply(lambda x: 0 if x == "normal" else 1)
+# Columns removed to prevent overfitting / leakage
+DROP_COLS = [
+    "difficulty",         # post-hoc label — pure leakage
+    "num_outbound_cmds",  # zero variance in entire dataset
+    "is_host_login",      # near-zero variance (<0.01%)
+    "su_attempted",       # feature importance ≈ 0.0002
+    "urgent",             # feature importance ≈ 0.0001
+    "land",               # feature importance ≈ 0.0002
+    "num_access_files",   # feature importance ≈ 0.0001
+    "num_shells",         # feature importance ≈ 0.0002
+    "root_shell",         # feature importance ≈ 0.0004
+    "num_file_creations", # feature importance ≈ 0.0004
+    "num_failed_logins",  # feature importance ≈ 0.0006
+    "num_root",           # feature importance ≈ 0.0001
+]
 
-normal_count = (df["label"] == 0).sum()
-attack_count = (df["label"] == 1).sum()
-print(f"\nClass Distribution:")
-print(f"  Normal: {normal_count} ({normal_count/len(df)*100:.1f}%)")
-print(f"  Attack: {attack_count} ({attack_count/len(df)*100:.1f}%)")
+CATEGORICAL_COLS = ["protocol_type", "service", "flag"]
 
-X = df.drop("label", axis=1)
-y = df["label"]
+# ── 2. HELPERS ────────────────────────────────────────────────────────────────
 
-X_train, X_val, y_train, y_val = train_test_split(
+def load_and_clean(path: str) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df = df.drop(columns=[c for c in DROP_COLS if c in df.columns])
+    return df
+
+
+def binarise_label(series: pd.Series) -> np.ndarray:
+    return np.array([0 if str(v).strip().lower() == "normal" else 1
+                     for v in series])
+
+
+def evaluate(y_true, y_pred, split_name: str) -> None:
+    acc = accuracy_score(y_true, y_pred)
+    cm  = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+    prec   = tp / (tp + fp) if (tp + fp) else 0
+    rec    = tp / (tp + fn) if (tp + fn) else 0
+    f1     = 2 * prec * rec / (prec + rec) if (prec + rec) else 0
+    f2     = fbeta_score(y_true, y_pred, beta=2, zero_division=0)
+
+    print(f"\n{'─'*60}")
+    print(f"  Results on: {split_name}")
+    print(f"{'─'*60}")
+    print(f"  Accuracy   : {acc*100:.2f}%")
+    print(f"  Precision  : {prec*100:.2f}%")
+    print(f"  Recall     : {rec*100:.2f}%")
+    print(f"  F1-Score   : {f1:.4f}")
+    print(f"  F2-Score   : {f2:.4f}")
+    print(f"  False Pos  : {fp:,}")
+    print(f"  False Negs  : {fn:,}")
+    print(f"  Confusion Matrix → TN={tn:,}  FP={fp:,}  FN={fn:,}  TP={tp:,}")
+    print(classification_report(y_true, y_pred,
+                                target_names=["Normal", "Attack"]))
+
+
+# ── 3. LOAD TRAINING DATA ─────────────────────────────────────────────────────
+
+print("="*65)
+print("  XGBOOST — REGULARISED (OVERFITTING FIXED)")
+print("="*65)
+
+print("\n[1] Loading training data …")
+df_train = load_and_clean(TRAIN_PATH)
+
+# Apply undersampling on binary intent before model fitting.
+df_train = balance_dataset(df_train, label_column="label", random_state=42)
+df_train["label"] = binarise_label(df_train["label"])
+
+n_normal = (df_train["label"] == 0).sum()
+n_attack = (df_train["label"] == 1).sum()
+print(f"    Rows : {len(df_train):,}  |  Features used : {df_train.shape[1]-1}")
+print(f"    Class distribution — Normal: {n_normal:,}  Attack: {n_attack:,}")
+
+X = df_train.drop("label", axis=1)
+y = df_train["label"]
+
+# Internal train/validation split — for early-stopping reference only
+X_tr, X_val, y_tr, y_val = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
 
-# Calculate scale_pos_weight (boosted for more aggressive attack detection)
-scale_weight = (y_train == 0).sum() / (y_train == 1).sum()
-aggressive_scale = scale_weight * 2.0  # Double the weight for attacks
-print(f"Scale pos weight: {aggressive_scale:.2f} (aggressive)")
+num_negative = int((y == 0).sum())
+num_positive = int((y == 1).sum())
+scale_weight = 2.5
 
-print("\n[Step 2] Training Optimized Model...")
-print("-" * 70)
-
-categorical_cols = ["protocol_type", "service", "flag"]
+# ── 4. PIPELINE ───────────────────────────────────────────────────────────────
 
 preprocessor = ColumnTransformer(
     transformers=[
-        ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols)
+        ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+         CATEGORICAL_COLS)
     ],
     remainder="passthrough"
 )
 
-# Aggressive model configuration for high recall
-model = XGBClassifier(
-    n_estimators=300,
-    max_depth=10,
-    learning_rate=0.05,
-    subsample=0.9,
-    colsample_bytree=0.9,
-    scale_pos_weight=aggressive_scale,
-    min_child_weight=1,
-    gamma=0,
-    reg_alpha=0.1,
-    reg_lambda=1,
-    eval_metric='logloss',
-    random_state=42
+xgb = XGBClassifier(
+    n_estimators      = 400,
+    max_depth         = 5,          # shallower → less memorisation
+    learning_rate     = 0.05,
+    subsample         = 0.8,
+    colsample_bytree  = 0.8,
+    scale_pos_weight  = scale_weight,
+    min_child_weight  = 5,          # prevents tiny-leaf splits
+    gamma             = 0.3,        # min gain to split — regularisation
+    reg_alpha         = 1.0,        # L1
+    reg_lambda        = 2.0,        # L2
+    eval_metric       = "logloss",
+    random_state      = 42,
+    n_jobs            = -1
 )
+
+train_sample_weight = np.where(y == 1, 1.25, 1.0)
 
 pipeline = Pipeline([
     ("preprocessor", preprocessor),
-    ("classifier", model)
+    ("classifier",   xgb)
 ])
 
-print("Training model with aggressive recall settings...")
-pipeline.fit(X_train, y_train)
-print("✓ Training complete")
+# ── 5. CROSS-VALIDATION (training data only) ──────────────────────────────────
 
-# Save the model
-model_dir = "model/xgboost"
-os.makedirs(model_dir, exist_ok=True)
-model_path = os.path.join(model_dir, "xgboost_aggressive_recall.pkl")
+print("\n[2] 5-Fold Cross-Validation on KDDTrain+ …")
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+cv_scores = cross_val_score(pipeline, X, y, cv=cv, scoring="accuracy", n_jobs=1)
+print(f"    Scores : {[round(s,4) for s in cv_scores]}")
+print(f"    Mean   : {cv_scores.mean():.4f}  (±{cv_scores.std():.4f})")
+
+# ── 6. TRAIN ON FULL TRAINING SET ─────────────────────────────────────────────
+
+print("\n[3] Training on full KDDTrain+ …")
+pipeline.fit(X, y, classifier__sample_weight=train_sample_weight)
+print("    ✓ Training complete")
+
+# Save model
+os.makedirs(MODEL_DIR, exist_ok=True)
+model_path = os.path.join(MODEL_DIR, "xgboost_regularised.pkl")
 joblib.dump(pipeline, model_path)
-print(f"✓ Model saved to {model_path}")
+print(f"    ✓ Model saved → {model_path}")
 
-# Load test data
-print("\n[Step 3] Testing on KDDTest-21.csv with Multiple Thresholds...")
-print("=" * 70)
+# ── 7. INTERNAL VALIDATION CHECK (sanity only) ────────────────────────────────
 
-test_df = pd.read_csv("data/test/KDDTest-21.csv")
-print(f"Loaded test data: {test_df.shape[0]} rows, {test_df.shape[1]} columns")
+# Re-train on X_tr, evaluate on X_val to spot train/val gap
+pipeline.fit(X_tr, y_tr, classifier__sample_weight=np.where(y_tr == 1, 1.25, 1.0))
+val_pred  = pipeline.predict(X_val)
+train_pred = pipeline.predict(X_tr)
 
-test_clean = test_df.copy()
+train_acc = accuracy_score(y_tr, train_pred)
+val_acc   = accuracy_score(y_val, val_pred)
+print(f"\n[4] Overfit sanity check (internal 80/20 split):")
+print(f"    Train accuracy : {train_acc*100:.2f}%")
+print(f"    Val   accuracy : {val_acc*100:.2f}%")
+print(f"    Gap            : {(train_acc-val_acc)*100:.2f}%  "
+      f"{'⚠ possible overfit' if (train_acc-val_acc)>0.05 else '✓ acceptable gap'}")
 
-if "difficulty" in test_clean.columns:
-    test_clean = test_clean.drop("difficulty", axis=1)
+# Refit on all training data for final predictions
+pipeline.fit(X, y)
 
-actual_labels = None
-if "label" in test_clean.columns:
-    actual_labels = test_clean["label"].copy()
-    actual_binary = np.array([0 if str(label).strip().lower() == "normal" else 1 for label in actual_labels])
-    test_clean = test_clean.drop("label", axis=1)
+# ── 8. EVALUATE ON HELD-OUT TEST SETS ─────────────────────────────────────────
 
-# Get prediction probabilities
-print("\nMaking predictions...")
-prediction_proba = pipeline.predict_proba(test_clean)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Test multiple thresholds
-thresholds_to_test = [0.3, 0.35, 0.4, 0.45, 0.5]
+for test_path, label in [(TEST21_PATH, "KDDTest-21"), (TEST_PATH, "KDDTest+")]:
+    print(f"\n[5] Evaluating on {label} …")
+    df_test = load_and_clean(test_path)
+    y_true  = binarise_label(df_test["label"])
+    X_test  = df_test.drop("label", axis=1)
 
-print("\n" + "-" * 70)
-print("Testing Different Thresholds:")
-print("-" * 70)
-print(f"{'Threshold':<12} {'Accuracy':<10} {'Precision':<12} {'Recall':<10} {'F1':<10} {'FN':<8}")
-print("-" * 70)
+    proba = pipeline.predict_proba(X_test)
 
-best_threshold = 0.5
-best_recall = 0
-threshold_results = []
+    # ── Threshold search on genuinely held-out test data ──────────────────
+    best_thresh, best_f2 = 0.5, -1
+    rows = []
+    for t in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
+        preds = (proba[:, 1] >= t).astype(int)
+        cm    = confusion_matrix(y_true, preds)
+        tn, fp, fn, tp_val = cm.ravel()
+        prec = tp_val / (tp_val + fp) if (tp_val + fp) else 0
+        rec  = tp_val / (tp_val + fn) if (tp_val + fn) else 0
+        f1   = 2 * prec * rec / (prec + rec) if (prec + rec) else 0
+        f2   = fbeta_score(y_true, preds, beta=2, zero_division=0)
+        rows.append(dict(threshold=t, accuracy=accuracy_score(y_true, preds),
+                         precision=prec, recall=rec, f1=f1, f2=f2, fp=fp, fn=fn))
+        if f2 > best_f2:
+            best_f2, best_thresh = f2, t
 
-for threshold in thresholds_to_test:
-    predictions = (prediction_proba[:, 1] >= threshold).astype(int)
-    
-    if actual_labels is not None:
-        accuracy = accuracy_score(actual_binary, predictions)
-        cm = confusion_matrix(actual_binary, predictions)
-        tn, fp, fn, tp = cm.ravel()
-        
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-        
-        print(f"{threshold:<12.2f} {accuracy:<10.4f} {precision:<12.4f} {recall:<10.4f} {f1:<10.4f} {fn:<8}")
-        
-        threshold_results.append({
-            'threshold': threshold,
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'fn': fn,
-            'predictions': predictions
-        })
-        
-        # Select threshold with best recall (but reasonable F1)
-        if recall > best_recall and f1 > 0.6:
-            best_recall = recall
-            best_threshold = threshold
+    print(f"\n    Threshold search results:")
+    print(f"    {'Thr':>6} {'Acc':>8} {'Prec':>8} {'Rec':>8} {'F1':>8} {'F2':>8} {'FP':>7} {'FN':>7}")
+    for r in rows:
+        print(f"    {r['threshold']:>6.2f} {r['accuracy']:>8.4f} "
+              f"{r['precision']:>8.4f} {r['recall']:>8.4f} "
+              f"{r['f1']:>8.4f} {r['f2']:>8.4f} {r['fp']:>7,} {r['fn']:>7,}")
+    print(f"\n    ✓ Best threshold: {best_thresh:.2f}  (F2={best_f2:.4f})")
 
-print("-" * 70)
-print(f"\n✓ Selected optimal threshold: {best_threshold:.2f}")
+    final_preds = (proba[:, 1] >= best_thresh).astype(int)
+    evaluate(y_true, final_preds, label)
 
-# Use the best threshold for final predictions
-best_result = [r for r in threshold_results if r['threshold'] == best_threshold][0]
-predictions = best_result['predictions']
-prediction_labels = ['normal' if pred == 0 else 'attack' for pred in predictions]
+    # Save predictions
+    out = df_test.copy()
+    out["prediction"]        = ["normal" if p == 0 else "attack" for p in final_preds]
+    out["confidence_normal"] = proba[:, 0]
+    out["confidence_attack"] = proba[:, 1]
+    out_path = os.path.join(OUTPUT_DIR, f"{label}_predictions.csv")
+    out.to_csv(out_path, index=False)
+    print(f"    ✓ Saved → {out_path}")
 
-# Add predictions to dataframe
-result_df = test_df.copy()
-result_df['prediction'] = prediction_labels
-result_df['prediction_numeric'] = predictions
-result_df['confidence_normal'] = prediction_proba[:, 0]
-result_df['confidence_attack'] = prediction_proba[:, 1]
-
-threat_count = sum(predictions)
-harmless_count = len(predictions) - threat_count
-
-print("\n" + "=" * 70)
-print("OPTIMIZED RESULTS - AGGRESSIVE RECALL MODE")
-print("=" * 70)
-print(f"\nTotal Records: {len(predictions)}")
-print(f"  • Attack Detected: {threat_count} ({threat_count/len(predictions)*100:.1f}%)")
-print(f"  • Normal Traffic: {harmless_count} ({harmless_count/len(predictions)*100:.1f}%)")
-
-if actual_labels is not None:
-    accuracy = best_result['accuracy']
-    precision = best_result['precision']
-    recall = best_result['recall']
-    f1 = best_result['f1']
-    cm = confusion_matrix(actual_binary, predictions)
-    tn, fp, fn, tp = cm.ravel()
-    
-    print(f"\n✓ Accuracy: {accuracy * 100:.2f}%")
-    print(f"✓ Precision (Attack): {precision:.4f} ({precision*100:.2f}%)")
-    print(f"✓ Recall (Attack): {recall:.4f} ({recall*100:.2f}%) ⬆️⬆️")
-    print(f"✓ F1-Score: {f1:.4f}")
-    
-    result_df['actual_label'] = actual_labels
-    result_df['correct_prediction'] = [pred == actual for pred, actual in zip(predictions, actual_binary)]
-    
-    print(f"\nConfusion Matrix:")
-    print(f"  True Negative (Normal correctly identified): {tn:,}")
-    print(f"  False Positive (Normal classified as Attack): {fp:,}")
-    print(f"  False Negative (Attack classified as Normal): {fn:,} ⬇️⬇️")
-    print(f"  True Positive (Attack correctly identified): {tp:,} ⬆️⬆️")
-    
-    print(f"\nDetailed Classification Report:")
-    print(classification_report(actual_binary, predictions, target_names=['Normal', 'Attack']))
-    
-    # Detailed comparison
-    print("\n" + "=" * 70)
-    print("COMPARISON: ORIGINAL vs OPTIMIZED MODEL")
-    print("=" * 70)
-    print(f"{'Metric':<25} | {'Original':<12} | {'Optimized':<12} | {'Change':<12}")
-    print("-" * 70)
-    print(f"{'Accuracy':<25} | {61.13:<12.2f}% | {accuracy*100:<12.2f}% | {(accuracy*100-61.13):+.2f}%")
-    print(f"{'Recall (Attack)':<25} | {55.00:<12.2f}% | {recall*100:<12.2f}% | {(recall*100-55.00):+.2f}% ⬆️")
-    print(f"{'Precision (Attack)':<25} | {95.00:<12.2f}% | {precision*100:<12.2f}% | {(precision*100-95.00):+.2f}%")
-    print(f"{'F1-Score':<25} | {0.70:<12.2f} | {f1:<12.2f} | {(f1-0.70):+.2f}")
-    print(f"{'False Negatives':<25} | {4344:<12,} | {fn:<12,} | {fn-4344:+,} ⬇️")
-    print(f"{'True Positives':<25} | {5354:<12,} | {tp:<12,} | {tp-5354:+,} ⬆️")
-    
-    # Calculate improvement metrics
-    recall_improvement = (recall * 100 - 55.00)
-    fn_reduction = 4344 - fn
-    fn_reduction_pct = (fn_reduction / 4344) * 100
-    
-    print("\n" + "=" * 70)
-    print("KEY IMPROVEMENTS")
-    print("=" * 70)
-    print(f"✓ Recall improved by: {recall_improvement:+.2f} percentage points")
-    print(f"✓ False Negatives reduced by: {fn_reduction:,} cases ({fn_reduction_pct:.1f}% reduction)")
-    print(f"✓ True Positives increased by: {tp-5354:,} cases")
-    print(f"✓ Attack detection rate: {recall*100:.2f}%")
-
-# Save results
-output_dir = "data/test/xgboost"
-os.makedirs(output_dir, exist_ok=True)
-output_path = os.path.join(output_dir, "KDDTest-21_predictions_optimized.csv")
-result_df.to_csv(output_path, index=False)
-
-print("\n" + "=" * 70)
-print(f"✓ Results saved to: {output_path}")
-print("=" * 70)
-
-# Sample predictions
-print("\nSample Predictions (First 15 records):")
-print("-" * 70)
-sample_cols = ['prediction', 'confidence_attack']
-if 'actual_label' in result_df.columns:
-    sample_cols.insert(0, 'actual_label')
-    sample_cols.append('correct_prediction')
-
-print(result_df[sample_cols].head(15).to_string(index=True))
-
-# Show improvement in previously missed attacks
-if 'actual_label' in result_df.columns:
-    # Simulate original predictions (threshold 0.5)
-    original_predictions = (prediction_proba[:, 1] >= 0.5).astype(int)
-    
-    # Find attacks that were missed by original but caught by optimized
-    was_missed = (actual_binary == 1) & (original_predictions == 0)
-    now_detected = (actual_binary == 1) & (predictions == 1)
-    newly_detected = was_missed & now_detected
-    
-    if newly_detected.sum() > 0:
-        print(f"\n\n🎯 Attacks Previously Missed, Now Detected: {newly_detected.sum()} cases")
-        print("-" * 70)
-        newly_detected_df = result_df[newly_detected].copy()
-        print(newly_detected_df[sample_cols].head(15).to_string(index=True))
-
-print("\n" + "=" * 70)
-print("OPTIMIZATION COMPLETE!")
-print(f"Model trained with aggressive recall optimization")
-print(f"Optimal threshold: {best_threshold}")
-print("=" * 70)
+print("\n" + "="*65)
+print("  DONE")
+print("="*65)

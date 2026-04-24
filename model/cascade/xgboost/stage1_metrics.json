@@ -1,0 +1,16 @@
+{
+  "model": "xgboost",
+  "train_path": "data/train/KDDTrain+.csv",
+  "val_size": 0.2,
+  "random_state": 42,
+  "validation": {
+    "accuracy": 0.9988489779718198,
+    "f1": 0.9987630624866709,
+    "fpr_normal": 0.0008166901774445021,
+    "attack_recall": 0.9984649496844619,
+    "tn": 13458,
+    "fp": 11,
+    "fn": 18,
+    "tp": 11708
+  }
+}

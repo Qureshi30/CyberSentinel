@@ -19,7 +19,7 @@ from sklearn.metrics import accuracy_score, classification_report
 
 # Add parent directory to path to import preprocess module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.preprocess import load_csv, clean_data
+from src.preprocess import load_csv, clean_data, balance_dataset
 
 
 def get_model_pipeline(algorithm='randomforest'):
@@ -119,7 +119,7 @@ def train_intrusion_detection_model(algorithms=['randomforest']):
     print(f"   ✓ Data cleaned. {len(df)} records remaining")
     
     # Step 3: Prepare data for training
-    print("\n[3/4] Preparing features and labels...")
+    print("\n[3/5] Preparing features and labels...")
     
     # Drop difficulty column if exists
     if "difficulty" in df.columns:
@@ -127,6 +127,11 @@ def train_intrusion_detection_model(algorithms=['randomforest']):
     
     # Convert label to binary (0 for normal, 1 for attack)
     df["label"] = df["label"].apply(lambda x: 0 if str(x).strip().lower() == "normal" else 1)
+
+    # Balance the binary classes before splitting to reduce training bias
+    print("\n[4/5] Balancing dataset...")
+    df = balance_dataset(df, label_column="label", random_state=42)
+    print(f"   ✓ Balanced dataset prepared with {len(df)} samples")
     
     # Separate features from labels
     X = df.drop("label", axis=1)
@@ -136,7 +141,7 @@ def train_intrusion_detection_model(algorithms=['randomforest']):
     print(f"   ✓ Labels: {sum(y)} attacks, {len(y)-sum(y)} normal")
     
     # Step 4: Train models
-    print("\n[4/4] Training models...")
+    print("\n[5/5] Training models...")
     os.makedirs('model', exist_ok=True)
     
     results = {}

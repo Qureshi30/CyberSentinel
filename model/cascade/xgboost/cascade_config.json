@@ -1,0 +1,15 @@
+{
+  "model": "xgboost",
+  "thresholds": {
+    "stage1_low": 0.7,
+    "stage1_strong": 0.75,
+    "stage2_conf": 0.3,
+    "stage2_margin": 0.05
+  },
+  "validation_metrics": {
+    "attack_recall": 0.9983796691113764,
+    "fpr_normal": 0.0006682010542727745,
+    "binary_f1": 0.9988055626653016,
+    "accuracy": 0.9988886683865846
+  }
+}

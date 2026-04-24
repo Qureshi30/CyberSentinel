@@ -1,0 +1,348 @@
+:root {
+    --bg: #0d1116;
+    --panel: #171c23;
+    --panel-edge: #212936;
+    --text: #e7edf5;
+    --muted: #a8b1bf;
+    --track: #212833;
+    --soft: #cfe7c1;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Manrope", "Segoe UI", sans-serif;
+    color: var(--text);
+    background: radial-gradient(1200px 700px at 0% 0%, #1a2230 0%, var(--bg) 48%),
+        radial-gradient(900px 500px at 100% 100%, #1f1712 0%, var(--bg) 55%);
+}
+
+.shell {
+    width: min(940px, 94vw);
+    margin: 26px auto;
+    border-radius: 18px;
+    border: 1px solid var(--panel-edge);
+    background: linear-gradient(180deg, #181e28 0%, #131820 100%);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+    padding: 26px;
+}
+
+.headline {
+    font-size: 1.55rem;
+    font-weight: 800;
+    margin: 0 0 8px;
+}
+
+.subline {
+    margin: 0 0 20px;
+    color: var(--muted);
+    font-size: 0.98rem;
+}
+
+.section {
+    margin-top: 26px;
+}
+
+.section-title {
+    margin: 0 0 12px;
+    color: #d9dee7;
+    font-size: 1.07rem;
+    font-weight: 700;
+}
+
+.upload-section {
+    border: 1px solid #263041;
+    border-radius: 14px;
+    padding: 16px;
+    background: linear-gradient(180deg, #151b24 0%, #12171f 100%);
+}
+
+.upload-form {
+    display: grid;
+    grid-template-columns: minmax(200px, 1fr) 140px 140px 120px;
+    gap: 10px;
+    align-items: center;
+}
+
+.upload-form input,
+.upload-form select,
+.upload-form button {
+    height: 38px;
+    border-radius: 10px;
+    border: 1px solid #2e3949;
+    background: #1b212b;
+    color: #e7edf5;
+    padding: 0 10px;
+    font-family: inherit;
+}
+
+.upload-form button {
+    background: #2f80ed;
+    border-color: #2f80ed;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.upload-form button:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+
+.inference-results .subline {
+    margin-bottom: 10px;
+}
+
+.result-summary {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.result-pill {
+    border-radius: 999px;
+    background: #1b212b;
+    border: 1px solid #2b3646;
+    color: #dfe7f2;
+    padding: 6px 10px;
+    font-size: 0.84rem;
+    font-weight: 700;
+}
+
+.result-table-wrap {
+    overflow-x: auto;
+    border-radius: 10px;
+    border: 1px solid #2b3545;
+}
+
+.result-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #131922;
+}
+
+.result-table th,
+.result-table td {
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid #232d3c;
+    padding: 8px 10px;
+    font-size: 0.84rem;
+}
+
+.result-table th {
+    color: #c9d5e4;
+    font-weight: 800;
+    background: #1a2230;
+}
+
+.details-cell {
+    color: #b3c0d1;
+}
+
+.diagnostic-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.diagnostic-card {
+    border-radius: 14px;
+    border: 1px solid #263041;
+    background: linear-gradient(180deg, #151b24 0%, #12171f 100%);
+    padding: 16px;
+}
+
+.diagnostic-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.diagnostic-name {
+    font-size: 1rem;
+    font-weight: 800;
+}
+
+.diagnostic-accuracy {
+    font-size: 0.95rem;
+    font-weight: 800;
+    color: #d8f2ca;
+}
+
+.confusion-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.confusion-cell {
+    border-radius: 12px;
+    background: #1b212b;
+    border: 1px solid #273141;
+    padding: 10px 12px;
+}
+
+.confusion-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #93a2b6;
+    margin-bottom: 6px;
+}
+
+.confusion-value {
+    font-size: 1.12rem;
+    font-weight: 800;
+    color: #eff5fc;
+}
+
+.chip-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.metric-chip {
+    border-radius: 12px;
+    border: 1px solid #273141;
+    background: #19202a;
+    padding: 10px 12px;
+}
+
+.metric-chip-label {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #93a2b6;
+    margin-bottom: 6px;
+}
+
+.metric-chip-value {
+    font-size: 0.96rem;
+    font-weight: 800;
+    color: #f2f6fc;
+}
+
+.row {
+    display: grid;
+    grid-template-columns: 132px minmax(260px, 1fr) 84px 66px;
+    gap: 12px;
+    align-items: center;
+    margin: 10px 0;
+}
+
+.model-name {
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.track {
+    height: 24px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: linear-gradient(90deg, #272f3c 0%, var(--track) 100%);
+}
+
+.bar {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 550ms ease;
+}
+
+.value {
+    text-align: right;
+    font-size: 1rem;
+    font-weight: 700;
+}
+
+.badge {
+    justify-self: start;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    line-height: 1;
+    font-weight: 700;
+    padding: 6px 10px;
+    text-transform: lowercase;
+    color: #d7e9cc;
+    background: #2a4a20;
+}
+
+.badge.best {
+    color: #102640;
+    background: #d7ecff;
+}
+
+.badge.fixed {
+    color: #273618;
+    background: #d7e7bc;
+}
+
+.loading,
+.error {
+    color: var(--muted);
+    padding: 28px 0;
+}
+
+.error {
+    color: #ffb2b2;
+}
+
+.footer-note {
+    margin-top: 18px;
+    font-size: 0.85rem;
+    color: #8d98a9;
+}
+
+@media (max-width: 760px) {
+    .shell {
+        padding: 18px;
+        margin: 14px auto;
+    }
+
+    .headline {
+        font-size: 1.2rem;
+    }
+
+    .subline {
+        font-size: 0.9rem;
+    }
+
+    .row {
+        grid-template-columns: 1fr;
+        gap: 7px;
+        margin: 14px 0;
+    }
+
+    .model-name,
+    .value {
+        text-align: left;
+    }
+
+    .track {
+        height: 18px;
+    }
+
+    .badge {
+        width: fit-content;
+    }
+
+    .diagnostic-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .chip-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .upload-form {
+        grid-template-columns: 1fr;
+    }
+}
