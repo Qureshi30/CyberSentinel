@@ -54,6 +54,107 @@ body {
     font-weight: 700;
 }
 
+.stage-summary,
+.dataset-results {
+    margin-top: 18px;
+}
+
+.stage-summary-grid,
+.dataset-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.stage-summary-card,
+.dataset-card,
+.dataset-block {
+    border-radius: 14px;
+    border: 1px solid #263041;
+    background: linear-gradient(180deg, #151b24 0%, #12171f 100%);
+    padding: 16px;
+}
+
+.stage-title,
+.dataset-name,
+.dataset-card-name {
+    font-size: 1rem;
+    font-weight: 800;
+    margin-bottom: 10px;
+}
+
+.stage-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 0.76rem;
+    font-weight: 800;
+    margin-right: 8px;
+    margin-bottom: 10px;
+}
+
+.stage-badge-normal {
+    background: #24381d;
+    color: #d9f1c2;
+}
+
+.stage-badge-attack {
+    background: #3a1f23;
+    color: #ffccd5;
+}
+
+.stage-summary-note,
+.dataset-path,
+.dataset-card-mode {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin-bottom: 12px;
+}
+
+.stage-summary-stats {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    color: #dbe5f1;
+    font-weight: 700;
+}
+
+.stage-category-list {
+    display: grid;
+    gap: 8px;
+}
+
+.stage-category-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border-radius: 10px;
+    border: 1px solid #273141;
+    background: #19202a;
+    padding: 8px 10px;
+}
+
+.dataset-block {
+    margin-top: 16px;
+}
+
+.dataset-head,
+.dataset-card-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: baseline;
+    margin-bottom: 12px;
+}
+
+.warning {
+    color: #ffe28e;
+    margin: 6px 0 10px;
+    font-size: 0.84rem;
+}
+
 .upload-section {
     border: 1px solid #263041;
     border-radius: 14px;
@@ -336,6 +437,17 @@ body {
 
     .diagnostic-grid {
         grid-template-columns: 1fr;
+    }
+
+    .stage-summary-grid,
+    .dataset-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .dataset-head,
+    .dataset-card-head {
+        flex-direction: column;
+        align-items: flex-start;
     }
 
     .chip-grid {

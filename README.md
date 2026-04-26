@@ -1,6 +1,11 @@
 # 🛡️ CyberSentinel - Multi-Model Network Intrusion Detection System
 
-An advanced machine learning project that classifies network traffic as **Normal** or **Attack** using multiple state-of-the-art algorithms. CyberSentinel supports RandomForest, SVM, and XGBoost models trained on the NSL-KDD dataset for comprehensive network intrusion detection.
+An advanced machine learning project that classifies network traffic in a **two-stage pipeline**:
+
+1. **Stage 1: Binary Classification** - Normal vs Attack
+2. **Stage 2: Attack Classification** - DoS, Probe, R2L, U2R, and any trained attack categories
+
+CyberSentinel supports RandomForest, SVM, and XGBoost models trained on the NSL-KDD dataset for comprehensive network intrusion detection.
 
 ## 📋 Description
 
@@ -10,6 +15,12 @@ CyberSentinel is a sophisticated intrusion detection system that demonstrates ho
 - 🌲 **Random Forest** - Ensemble decision trees for robust classification
 - 🎯 **Support Vector Machine (SVM)** - Kernel-based classification with RBF
 - 🚀 **XGBoost** - Gradient boosting for high-performance prediction
+
+**Dashboard Output:**
+- Stage 1 result: `Normal` or `Attack`
+- Stage 2 result: attack category breakdown when an attack is detected
+- Live model comparison for all three models
+- Dark and light dashboard support
 
 ## 📁 Project Structure
 
@@ -127,12 +138,22 @@ python src/predict.py --test testplus --algorithm randomforest
 python src/predict.py your_data.csv --algorithm svm
 ```
 
-### Step 5: Launch Web Application (Optional)
+### Step 5: Launch Web Application / Dashboard
 
 ```bash
 python app.py
 ```
 Open browser: http://127.0.0.1:5000
+
+If you want the React dashboard, run:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open the Vite URL shown in the terminal, usually http://127.0.0.1:5173
 
 ## 📊 Detailed Usage Instructions
 
@@ -268,6 +289,8 @@ python app.py
 - 📊 Visual results with statistics
 - 📋 Downloadable prediction results
 - 🎛️ Model selection interface
+- 🧭 Explicit two-stage output view for Stage 1 and Stage 2
+- 🌗 Light and dark theme support in the React dashboard
 
 ## 🔧 Troubleshooting
 
@@ -341,7 +364,14 @@ Place KDDTrain+_20Percent.csv in data/train/ directory
 
 **After Prediction:**
 - `[input_file]_predictions_[algorithm].csv` → Results with predictions
-- Columns: original data + `prediction` + `prediction_numeric` + `model_used`
+- Cascade output columns include:
+   - `stage1_p_attack`
+   - `stage1_decision`
+   - `stage2_pred_category`
+   - `stage2_top1_conf`
+   - `stage2_margin`
+   - `final_prediction`
+   - `decision_path`
 
 ## ⚠️ Important Notes
 
@@ -359,8 +389,11 @@ This is an educational project. For improvements:
 3. Submit pull request with detailed description
 
 ## 👤 Author
-
 **Zaheen Siddiqui** - Network Security & Machine Learning
+GitHub: [Zaheen-Siddiqui](https://github.com/Zaheen-Siddiqui)
+
+**Prem Hanchate** - Network Security & Machine Learning
+GitHub: [Prem-Hanchate](https://github.com/Prem-Hanchate)
 
 ## 📄 License
 
