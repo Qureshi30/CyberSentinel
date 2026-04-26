@@ -14,6 +14,9 @@ from src.preprocess import clean_data
 
 app = Flask(__name__)
 
+REALTIME_INPUT_FILE = os.path.join("data", "test", "realtime_input.csv")
+ATTACK_CATEGORY_ORDER = ["DoS", "Probe", "R2L", "U2R", "Uncategorized"]
+
 MODEL_DASHBOARD_SOURCES = {
     "xgboost": {
         "display_name": "XGBoost",
@@ -267,10 +270,52 @@ def _pick_prediction_column(df):
     return _find_column(df, ["final_prediction", "prediction", "Prediction", "predicted_label", "pred"])
 
 
+def _build_two_stage_summary(result_df, pred_col):
+    final_series = result_df[pred_col].astype(str).str.strip()
+    normal_mask = final_series.str.lower() == "normal"
+
+    stage1_col = _find_column(result_df, ["stage1_decision"])
+    stage2_col = _find_column(result_df, ["stage2_pred_category"])
+    if stage1_col is not None:
+        stage1_attack = int(result_df[stage1_col].astype(str).str.strip().str.lower().eq("attack_path").sum())
+    else:
+        stage1_attack = int((~normal_mask).sum())
+
+    stage1_total = int(len(result_df))
+    stage1_normal = int(stage1_total - stage1_attack)
+
+    stage2_source = result_df[stage2_col] if stage2_col is not None else final_series
+    stage2_values = stage2_source.astype(str).str.strip()
+    stage2_values = stage2_values.where(stage2_values.str.lower() != "normal", other="normal")
+    stage2_values = stage2_values.where(stage2_values.str.lower() != "attack", other="Uncategorized")
+    stage2_values = stage2_values.where(stage2_values.str.lower() != "", other="Uncategorized")
+    attack_categories = stage2_values[~normal_mask]
+    raw_counts = attack_categories.value_counts().to_dict() if len(attack_categories) else {}
+
+    ordered = {"DoS": 0, "Probe": 0, "R2L": 0, "U2R": 0, "Uncategorized": 0}
+    for key, value in raw_counts.items():
+        ordered[key] = int(value)
+
+    return {
+        "stage1": {
+            "total": stage1_total,
+            "normal": stage1_normal,
+            "attack": stage1_attack,
+        },
+        "stage2": {
+            "total_attacks": int((~normal_mask).sum()),
+            "categories": ordered,
+            "mode": "categorized" if stage2_col is not None else "binary_only",
+        },
+    }
+
+
 def _build_prediction_payload(result_df, display_limit=100):
     if result_df is None or result_df.empty:
         return {
             "summary": {"total": 0, "normal": 0, "attack": 0, "showing": 0},
+            "stage1": {"total": 0, "normal": 0, "attack": 0},
+            "stage2": {"total_attacks": 0, "categories": {"DoS": 0, "Probe": 0, "R2L": 0, "U2R": 0, "Uncategorized": 0}, "mode": "binary_only"},
             "rows": [],
         }
 
@@ -289,6 +334,7 @@ def _build_prediction_payload(result_df, display_limit=100):
         "attack_percentage": round(float((~is_normal).mean() * 100.0), 2),
         "showing": int(min(display_limit, len(result_df))),
     }
+    stage_summary = _build_two_stage_summary(result_df, pred_col)
 
     preferred_cols = [
         pred_col,
@@ -325,8 +371,309 @@ def _build_prediction_payload(result_df, display_limit=100):
         "prediction_column": pred_col,
         "preview_columns": preview_cols,
         "summary": summary,
+        "stage1": stage_summary["stage1"],
+        "stage2": stage_summary["stage2"],
         "rows": rows,
     }
+
+
+def _safe_float(value, digits=6):
+    try:
+        return round(float(value), digits)
+    except Exception:
+        return None
+
+
+def _is_normal_label(value):
+    return str(value).strip().lower() == "normal"
+
+
+def _build_realtime_model_payload(result_df, display_limit=30):
+    if result_df is None or result_df.empty:
+        return {
+            "stage1": {"total": 0, "normal": 0, "attack": 0},
+            "stage2": {"total_attacks": 0, "categories": {}},
+            "preview_rows": [],
+        }
+
+    final_col = _find_column(result_df, ["final_prediction", "prediction", "predicted_label", "pred"])
+    if final_col is None:
+        raise ValueError("Prediction output does not contain a final prediction column")
+
+    stage1_col = _find_column(result_df, ["stage1_decision"])
+    stage1_attack_prob_col = _find_column(result_df, ["stage1_p_attack"])
+    stage2_cat_col = _find_column(result_df, ["stage2_pred_category"])
+    stage2_conf_col = _find_column(result_df, ["stage2_top1_conf"])
+    decision_path_col = _find_column(result_df, ["decision_path"])
+
+    final_series = result_df[final_col].astype(str).str.strip()
+    normal_mask = final_series.str.lower() == "normal"
+
+    if stage1_col is not None:
+        stage1_attack_mask = result_df[stage1_col].astype(str).str.strip().str.lower() == "attack_path"
+        stage1_attack = int(stage1_attack_mask.sum())
+    else:
+        stage1_attack = int((~normal_mask).sum())
+
+    stage1_total = int(len(result_df))
+    stage1_normal = int(stage1_total - stage1_attack)
+
+    attack_categories = final_series[~normal_mask]
+    stage2_counts = (
+        attack_categories.value_counts().sort_index().to_dict() if not attack_categories.empty else {}
+    )
+
+    preview_rows = []
+    for idx, (_, row) in enumerate(result_df.head(display_limit).iterrows(), start=1):
+        final_prediction = str(row[final_col])
+        stage2_category = None
+        if not _is_normal_label(final_prediction):
+            if stage2_cat_col is not None:
+                stage2_category = str(row[stage2_cat_col])
+            else:
+                stage2_category = final_prediction
+
+        preview_rows.append(
+            {
+                "row_number": idx,
+                "stage1_decision": str(row[stage1_col]) if stage1_col else ("attack_path" if not _is_normal_label(final_prediction) else "normal"),
+                "stage1_p_attack": _safe_float(row[stage1_attack_prob_col], 6) if stage1_attack_prob_col else None,
+                "stage2_category": stage2_category,
+                "stage2_confidence": _safe_float(row[stage2_conf_col], 6) if stage2_conf_col else None,
+                "final_prediction": final_prediction,
+                "decision_path": str(row[decision_path_col]) if decision_path_col else None,
+            }
+        )
+
+    return {
+        "stage1": {
+            "total": stage1_total,
+            "normal": stage1_normal,
+            "attack": stage1_attack,
+        },
+        "stage2": {
+            "total_attacks": int((~normal_mask).sum()),
+            "categories": stage2_counts,
+        },
+        "preview_rows": preview_rows,
+    }
+
+
+def _run_realtime_model_prediction(input_csv_path, algorithm, display_limit=30):
+    try:
+        result_df = predict_from_csv(input_csv_path, algorithm=algorithm, pipeline="cascade")
+        payload = _build_realtime_model_payload(result_df, display_limit=display_limit)
+        payload["available"] = True
+        return payload
+    except FileNotFoundError:
+        return {
+            "available": False,
+            "error": "Cascade artifacts not found for this model. Train stage1/stage2/calibration first.",
+            "stage1": {"total": 0, "normal": 0, "attack": 0},
+            "stage2": {"total_attacks": 0, "categories": {}},
+            "preview_rows": [],
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "error": str(exc),
+            "stage1": {"total": 0, "normal": 0, "attack": 0},
+            "stage2": {"total_attacks": 0, "categories": {}},
+            "preview_rows": [],
+        }
+
+
+def _normalize_prediction_to_stage2(value):
+    text = str(value).strip()
+    low = text.lower()
+    if low == "normal":
+        return "normal"
+    if low == "attack":
+        return "Uncategorized"
+    return text
+
+
+def _ordered_attack_categories(counts):
+    ordered = {key: int(counts.get(key, 0)) for key in ATTACK_CATEGORY_ORDER}
+    extra_keys = sorted([k for k in counts.keys() if k not in ordered])
+    for key in extra_keys:
+        ordered[key] = int(counts.get(key, 0))
+    return ordered
+
+
+def _has_stage2_categories(result_df):
+    if result_df is None or result_df.empty:
+        return False
+
+    if "stage2_pred_category" in result_df.columns:
+        return True
+
+    pred_col = _pick_prediction_column(result_df)
+    if pred_col is None:
+        return False
+
+    unique_non_normal = {
+        str(v).strip().lower()
+        for v in result_df[pred_col].dropna().unique().tolist()
+        if str(v).strip().lower() != "normal"
+    }
+    return len(unique_non_normal) > 0 and unique_non_normal != {"attack"}
+
+
+def _summarize_result_dataframe(result_df):
+    if result_df is None or result_df.empty:
+        return {
+            "stage1": {"total": 0, "normal": 0, "attack": 0},
+            "stage2": {
+                "total_attacks": 0,
+                "categories": _ordered_attack_categories({}),
+                "mode": "binary_only",
+            },
+        }
+
+    pred_col = _pick_prediction_column(result_df)
+    if pred_col is None:
+        raise ValueError("No prediction column found in results")
+
+    preds = result_df[pred_col].apply(_normalize_prediction_to_stage2)
+    normal_mask = preds.astype(str).str.lower() == "normal"
+
+    stage1 = {
+        "total": int(len(result_df)),
+        "normal": int(normal_mask.sum()),
+        "attack": int((~normal_mask).sum()),
+    }
+
+    attack_preds = preds[~normal_mask]
+    raw_counts = attack_preds.value_counts().to_dict() if len(attack_preds) else {}
+    stage2 = {
+        "total_attacks": int(len(attack_preds)),
+        "categories": _ordered_attack_categories(raw_counts),
+        "mode": "categorized" if _has_stage2_categories(result_df) else "binary_only",
+    }
+
+    return {
+        "stage1": stage1,
+        "stage2": stage2,
+    }
+
+
+def _load_existing_prediction_file(dataset_key, model_key):
+    file_map = {
+        "kddtest_plus": {
+            "xgboost": [
+                os.path.join("data", "test", "xgboost", "KDDTest+_predictions.csv"),
+                os.path.join("data", "test", "KDDTest+_predictions_xgboost.csv"),
+            ],
+            "svm": [
+                os.path.join("data", "test", "svm", "KDDTest+_predictions.csv"),
+                os.path.join("data", "test", "KDDTest+_predictions_svm.csv"),
+            ],
+            "random_forest": [
+                os.path.join("data", "test", "random_forest", "KDDTest+_predictions.csv"),
+                os.path.join("data", "test", "KDDTest+_predictions_randomforest.csv"),
+            ],
+        },
+        "kddtest_21": {
+            "xgboost": [
+                os.path.join("data", "test", "xgboost", "KDDTest-21_predictions.csv"),
+                os.path.join("data", "test", "KDDTest-21_predictions_xgboost.csv"),
+                os.path.join("data", "test", "KDDTest-21_cascade_xgboost.csv"),
+            ],
+            "svm": [
+                os.path.join("data", "test", "svm", "KDDTest-21_predictions.csv"),
+                os.path.join("data", "test", "KDDTest-21_predictions_svm.csv"),
+            ],
+            "random_forest": [
+                os.path.join("data", "test", "random_forest", "KDDTest-21_predictions.csv"),
+                os.path.join("data", "test", "KDDTest-21_predictions_randomforest.csv"),
+            ],
+        },
+    }
+
+    model_candidates = file_map.get(dataset_key, {}).get(model_key, [])
+    path = _first_existing_path(model_candidates)
+    if path is None:
+        return None, None
+
+    try:
+        return pd.read_csv(path), path
+    except Exception:
+        return None, path
+
+
+def _dataset_input_path(dataset_key):
+    if dataset_key == "kddtest_plus":
+        return os.path.join("data", "test", "KDDTest+.csv")
+    if dataset_key == "kddtest_21":
+        return os.path.join("data", "test", "KDDTest-21.csv")
+    raise ValueError("Unsupported dataset key")
+
+
+def _compute_model_dataset_result(dataset_key, model_key, algorithm_name):
+    existing_df, source_path = _load_existing_prediction_file(dataset_key, model_key)
+    cascade_ready = algorithm_name in list_available_cascade_models()
+
+    if existing_df is not None:
+        if _has_stage2_categories(existing_df):
+            summary = _summarize_result_dataframe(existing_df)
+            return {
+                "available": True,
+                "source": source_path,
+                "pipeline": "precomputed_file",
+                **summary,
+            }
+
+        if not cascade_ready:
+            summary = _summarize_result_dataframe(existing_df)
+            return {
+                "available": True,
+                "source": source_path,
+                "pipeline": "precomputed_file",
+                "warning": "Only binary outputs found. Stage 2 categories are shown as Uncategorized.",
+                **summary,
+            }
+
+    input_path = _dataset_input_path(dataset_key)
+    fallback_ready = algorithm_name in list_available_models()
+
+    if not cascade_ready and not fallback_ready:
+        return {
+            "available": False,
+            "source": None,
+            "pipeline": None,
+            "error": "No trained artifacts found for this model.",
+            "stage1": {"total": 0, "normal": 0, "attack": 0},
+            "stage2": {
+                "total_attacks": 0,
+                "categories": _ordered_attack_categories({}),
+                "mode": "binary_only",
+            },
+        }
+
+    pipeline = "cascade" if cascade_ready else "single"
+    try:
+        result_df = predict_from_csv(input_path, algorithm=algorithm_name, pipeline=pipeline)
+        summary = _summarize_result_dataframe(result_df)
+        return {
+            "available": True,
+            "source": input_path,
+            "pipeline": pipeline,
+            **summary,
+        }
+    except Exception as exc:
+        return {
+            "available": False,
+            "source": input_path,
+            "pipeline": pipeline,
+            "error": str(exc),
+            "stage1": {"total": 0, "normal": 0, "attack": 0},
+            "stage2": {
+                "total_attacks": 0,
+                "categories": _ordered_attack_categories({}),
+                "mode": "binary_only",
+            },
+        }
 
 
 @app.route('/')
@@ -383,6 +730,133 @@ def api_predict():
         }), 404
     except Exception as e:
         return jsonify({"error": f"Error processing file: {str(e)}"}), 500
+
+
+@app.route('/api/realtime/upload', methods=['POST'])
+def api_realtime_upload():
+    """
+    Upload and store latest input data for polling-based inference.
+    """
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
+
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+
+        if not file.filename.lower().endswith('.csv'):
+            return jsonify({"error": "Please upload a CSV file"}), 400
+
+        os.makedirs(os.path.dirname(REALTIME_INPUT_FILE), exist_ok=True)
+        file.save(REALTIME_INPUT_FILE)
+
+        return jsonify({
+            "message": "input uploaded",
+            "input_file": REALTIME_INPUT_FILE,
+        })
+    except Exception as exc:
+        return jsonify({"error": f"Failed to upload file: {str(exc)}"}), 500
+
+
+@app.route('/api/realtime/predict-all', methods=['GET', 'POST'])
+def api_realtime_predict_all():
+    """
+    Run two-stage cascade predictions across all three models and return unified dashboard payload.
+    """
+    try:
+        input_path = REALTIME_INPUT_FILE
+
+        if request.method == 'POST' and 'file' in request.files:
+            file = request.files['file']
+            if file.filename == '':
+                return jsonify({"error": "No file selected"}), 400
+            if not file.filename.lower().endswith('.csv'):
+                return jsonify({"error": "Please upload a CSV file"}), 400
+
+            os.makedirs(os.path.dirname(REALTIME_INPUT_FILE), exist_ok=True)
+            file.save(REALTIME_INPUT_FILE)
+
+        if not os.path.exists(input_path):
+            return jsonify({
+                "error": "No input available. Upload a CSV first using /api/realtime/upload.",
+            }), 400
+
+        try:
+            display_limit = int(request.args.get('limit', 30))
+        except ValueError:
+            display_limit = 30
+        display_limit = max(1, min(display_limit, 200))
+
+        model_outputs = {
+            "xgboost": _run_realtime_model_prediction(input_path, "xgboost", display_limit),
+            "svm": _run_realtime_model_prediction(input_path, "svm", display_limit),
+            "random_forest": _run_realtime_model_prediction(input_path, "randomforest", display_limit),
+        }
+
+        return jsonify(
+            {
+                "generated_at": pd.Timestamp.now("UTC").isoformat(),
+                "input_file": input_path,
+                "models": model_outputs,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"error": f"prediction failed: {str(exc)}"}), 500
+
+
+@app.route('/api/dataset-results', methods=['GET'])
+def api_dataset_results():
+    """
+    Return model-wise results for the two built-in datasets in data/test.
+    Uses precomputed prediction CSV files when available; otherwise attempts model inference.
+    """
+    try:
+        datasets = {
+            "kddtest_plus": {
+                "name": "KDDTest+",
+                "path": os.path.join("data", "test", "KDDTest+.csv"),
+            },
+            "kddtest_21": {
+                "name": "KDDTest-21",
+                "path": os.path.join("data", "test", "KDDTest-21.csv"),
+            },
+        }
+
+        model_map = {
+            "xgboost": "xgboost",
+            "svm": "svm",
+            "random_forest": "randomforest",
+        }
+
+        payload = {
+            "generated_at": pd.Timestamp.now("UTC").isoformat(),
+            "datasets": {},
+        }
+
+        for dataset_key, dataset_meta in datasets.items():
+            dataset_result = {
+                "name": dataset_meta["name"],
+                "path": dataset_meta["path"],
+                "models": {},
+            }
+            for model_key, algo in model_map.items():
+                model_result = _compute_model_dataset_result(
+                    dataset_key=dataset_key,
+                    model_key=model_key,
+                    algorithm_name=algo,
+                )
+                model_result["display_name"] = MODEL_DASHBOARD_SOURCES.get(model_key, {}).get(
+                    "display_name",
+                    model_key,
+                )
+                dataset_result["models"][model_key] = model_result
+
+            payload["datasets"][dataset_key] = dataset_result
+
+        return jsonify(payload)
+    except Exception as exc:
+        return jsonify({"error": f"Failed to load dataset results: {str(exc)}"}), 500
 
 
 @app.route('/predict', methods=['POST'])
